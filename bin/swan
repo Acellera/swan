@@ -1,0 +1,29 @@
+#!/bin/bash
+
+# Swan (c) 2010 M J Harvey  m.j.harvey@ic.ac.uk
+# License: GPL v 2
+
+CMD=$0
+OCL=0
+
+if [ "$#" -gt 1 ]; then
+
+TYPE=$1
+shift;
+if [ "$TYPE" == "--opencl" ]; then
+	echo "Building for OpenCL"
+	$CMD.ocl $*
+elif [ "$TYPE" == "--cuda" ]; then
+	echo "Building for CUDA"
+	$CMD.nv $*
+elif [ "$TYPE" == "--opencl-direct" ]; then
+	echo "Building for OpenCL (assuming OpenCL source)"
+	$CMD.ocldirect $*
+else
+	echo "Building for CUDA (default)"
+	$CMD.nv $TYPE $*
+fi
+else
+	echo "Syntax: $CMD [--opencl|--cuda|--opencl-direct] outfile infile [compiler arguments...]"
+fi
+

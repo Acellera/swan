@@ -1,0 +1,488 @@
+#!/usr/bin/perl -w
+#
+# Swan (c) 2010 M J Harvey  m.j.harvey@ic.ac.uk
+# License: GPL v 2
+
+
+
+use strict;
+use File::Temp qw/ :mktemp  /;
+use Text::Balanced qw/ extract_codeblock /;
+use Text::Balanced qw/ extract_bracketed /;
+
+# Process the command line arguments
+#
+my $outputf="";
+my $sourcef="";
+my @switch;
+my $i;
+
+($sourcef, $outputf, @switch) = parse_args( \@ARGV );
+
+if ( $sourcef =~ /^$/  ||  $outputf =~ /^$/ ) {
+	error( "Syntax : swan sourcefiles [switches]" );
+}
+
+
+my @sm_arch = ( '11', '12', '13', '20', '21' );
+
+my $cubin;
+my $source;
+my @textures;
+my @kernels;
+my @stub_protos;
+my @stubs;
+
+my %cubins;
+
+my $ok = 0;
+
+my $arch;
+
+my $nvcc_math_flags="";
+
+{
+my $iver = `nvcc --version | grep release`;
+
+if ($iver =~ /release 3.2/) {
+	printf "Compiling with Cuda 3\n";
+	$nvcc_math_flags="--ftz=true ";
+}
+else {
+	$nvcc_math_flags="-m32";
+}
+
+}
+
+foreach $arch (  @sm_arch ) {
+	print "Compiling for device architecture $arch\n";
+	($source, $cubin) = to_cubin( $sourcef, $arch );
+
+	if ( (length $cubin ) > 0 ) {
+		extract_textures ( $source, \@textures );
+
+		$cubins{$arch} = $cubin;
+
+		my $source_no_kernels;
+		$source_no_kernels = extract_kernels( $source, \@kernels );
+
+		make_stubs( \@kernels, \@stub_protos, \@stubs, 0 );
+		make_stubs( \@kernels, \@stub_protos, \@stubs, 1 );
+		$ok = 1;
+	}
+
+
+}
+
+if( $ok == 0 ) {
+	print "All compilations failed";
+	exit(99);
+}
+
+# Finished compiling, now output
+
+  my $FILE;
+	open FILE, ">", $outputf or die "Cannot open output file";
+	print FILE "#define __PTX_INCLUDED\n"; 
+	printf FILE  "static const char * __SWAN_MODULE_NAME__ = \".$sourcef.\";\n";
+	printf FILE "static const char * __swan_textures[] = {\n";
+	for( $i = 0 ; $i <= $#textures; $i++ ) {
+		printf FILE "\t\"%s\",\n", $textures[$i] ;
+	}	
+	printf FILE "\t0 };\n\n";
+
+	foreach $arch ( ( '10', '11','12', '13', '20', '21' ) ) {
+		$cubin = $cubins{$arch};
+
+		if (!defined $cubin ||  length( $cubin ) == 0 ) { $cubin="{ 0x00 };"; }
+	
+		if( defined $cubin ) {	
+			print FILE "static const unsigned char  __swan_program_source_${arch}[] = \n $cubin \n\t"; 
+		}
+		else {
+			print FILE "static const unsigned char  __swan_program_source_${arch}[] = {};\n\t";
+		}
+	}
+	print FILE "#include \"swan_stub_nv.h\"\n";
+
+	for( $i = 0 ; $i <= $#stubs; $i++ ) {
+		print FILE "$stub_protos[$i]\n";
+		print FILE "$stubs[$i]\n\n";
+	}
+	close FILE;
+
+
+exit(0);
+
+
+
+sub error {
+	printf("ERROR %s\n", shift );
+	exit(99);
+}
+
+sub parse_args {
+	my @switch;
+	$i = shift;
+	my @args = @$i;
+
+	my $output = $args[0];
+	my $source = $args[1];
+	for( $i=2; $i <= $#args; $i++ ) {
+			push @switch, $args[$i];
+	}
+	return ( $source, $output, @switch );
+}
+
+
+sub getpragma {
+	my $sourcef = shift;
+	my $source =`cat $sourcef | grep -e "^#pragma MAX_REGISTERS"`;
+	$source =~ /#pragma MAX_REGISTERS \d+/;
+
+
+	my $reg = $&;
+	if ( !defined($reg) ) { return -1; }
+	$reg =~ /\d+/; 
+	$reg = $&;
+
+
+	if($reg > 0 ) { 
+		return $reg;
+	}
+	else { return -1; }
+}
+sub preprocess {
+	my $source = shift;
+	my $k = shift;
+	my @switch = @$k;
+	my $i;
+	my $cmd = "cpp ";
+#	my $cmd = "gcc  -x c -E ";
+	my $tempfile = mktemp( "swanXXXXXX" );  
+	$tempfile = $tempfile . ".exe";
+
+	$cmd = $cmd . " ". $source;
+	for( $i= $#switch; $i>=0; $i-- ) { $cmd = $cmd . " ". $switch[$i]; }
+	$cmd = $cmd . " -o $tempfile";
+	`$cmd`;
+
+	if( ! -e $tempfile ) {
+		error( "Preprocessing failed" );
+		exit;
+	}
+	# Load in the file
+	 $source = `cat $tempfile`;
+	unlink( $tempfile );
+	return $source;
+}
+
+
+sub extract_textures {
+	my $source = shift;
+	my $proto  = shift;
+
+	my $reg = 'texture\s*<\s*\w+\s*,\s*\w+\s*,\s*\w+\s*>\s*\w+\s*;';
+	$_ =$source;
+	while( $_ =~ /$reg/ ) {
+		my $name =$&;
+		$_ = $';
+		$name =~ s/.*>//g;
+		$name =~ s/;//g;
+		$name =~ s/^\s+//g;
+		$name =~ s/\s+$//g;
+#		printf("TEXTURE %s\n", $name );
+		push @$proto, $name;
+	}
+
+}
+
+
+sub extract_kernels {
+	my $extracted="" ;
+	my $remainder="";
+	my $source = shift;
+	my $proto  = shift;
+	my $source_no_prot = "";
+	# Step 2 - grep out each of the kernels/kernel prototypes
+#print $source;
+#	my $reg = '((__global__)|(__device__)|(__global__\s+__device__)|(__device__\s+__global__))\s+\w+\s+\w+\s*\((\s*[\w\*]+\s+[\w\*]+\s*,*)*\)\s*{';
+	my $reg = '((__global__)|(__device__)|(__global__\s+__device__)|(__device__\s+__global__))\s+\w+(\s+BOUNDS\s*\([^,\)\(]+,[^,\)\(]+,[^,\)\(]+,[^\)\(,]+\)\s+|\s+)\w+\s*\((\s*[\w\*]+\s+[\w\*]+\s*,*)*\)\s*{';
+	$_ = $source;
+	while( $_ =~ /$reg/ ) {
+		my $dec = $&;
+
+
+		$source_no_prot = $source_no_prot . $` ;
+		my $end=$';
+			
+    ($extracted, $remainder) = extract_bracketed("{".$end, "{}" );
+
+		my $breg = 'BOUNDS\s*\([^,\(\)]+,[^,\(\)]+,[^,\(\)]+,[^,\(\)]+\)';
+		$dec =~ s/$breg//g;
+
+		push @$proto, $dec . $extracted;
+		$_ = $remainder;
+#//if ( $_ =~ /s14_bond_pme/ ) { 
+#//	printf("STILL THERE\n" );
+#	printf("[{$end]\n" );
+#}
+#print $extracted;
+	}
+
+	$source_no_prot = $source_no_prot . $remainder;
+
+	if ( $source_no_prot =~ /^$/ ) { 
+		# No prototypes inthis source
+		$source_no_prot = $source; 
+	}
+	return $source_no_prot;
+}
+
+sub make_stubs {
+	my $a = shift;
+	my @kernel = @$a;
+	my $protos = shift;
+	my $stubs  = shift;
+	my $async  = shift;
+	my $i;
+	my $ik;
+
+printf ("FOUND %d kernels\n", $#kernel  + 1 );
+
+	for( $ik=0; $ik<=$#kernel; $ik++ ) {
+		my $p = $kernel[$ik];
+		$p =~ /[^\(]+\(/;
+		my $prefix = $&;
+
+		$p = $';
+		$p =~ /[^\(]+\)/;
+		my $args = $&;
+		$args =~ s/\s*\)\s*$//g;
+		$prefix =~ s/\s*\(\s*$//g;
+		chomp $args;
+		chomp $prefix;
+		# Perhaps the arg is "float *foo" -- the * associates with the type, not the varname:
+		$args =~ s/\s*\*/\*\ /g;
+		$args =~ s/,/\ ,\ /g;
+		$args =~ s/\s+const\s+//g;
+		my @aa = split( /,/, $args );
+		my @types;
+		for (my $j=0; $j <= $#aa; $j++ ) {
+			chomp( $aa[$j] );
+			$aa[$j] =~ s/^\s+//g;
+			$aa[$j] =~ s/\s+$//g;
+			my @bb = split( /\s+/, $aa[$j] );
+#			printf("%s : %s\n", $bb[0], $bb[1] );
+			if( $bb[0] =~ /\s*struct\s*/ ) {
+				$bb[0] = $bb[0] . " " . $bb[1];
+			}
+			push @types, $bb[0];
+			
+		}
+
+		# Now let's process the prefix. We need to get the function name and ensure that it's not just a __device__ function
+		my $is_global=0;
+		my $name;
+		if( $prefix =~ /__global__\s+/ ) { $is_global=1; }
+		$name = $prefix;
+		$name =~ s/\s*$//g;
+		$name =~ s/^.*\s+//g;
+printf("\t[%s]\n", $name );
+
+	my $async_str="";
+	if( $async == 1 ) { $async_str="_async"; }
+
+		if( $is_global ) {
+	#		print $prefix;
+	#		print "\n";		
+	#		print @types;
+	#		print "\n";		
+			my $proto = "static void k_".$name."". $async_str." ( block_config_t grid, block_config_t block, size_t shmem, ";
+			for( $i=0; $i<= $#types; $i++ ) {
+				$types[$i] =~ s/\*.*/\*/g;
+			}
+			for( $i=0; $i< $#types; $i++ ) {
+				$proto = $proto . $types[$i]." param".$i.", ";
+			}
+			if( $#types >= 0 ) {
+				$proto = $proto . $types[ $#types ] . " param".$i;
+			}
+			$proto = $proto. " )";
+#			printf ("%s\n", $proto );	
+
+	my $raw_data;
+	my $found = 0;
+	foreach $raw_data(@$protos)
+        {
+                if (index($raw_data,$proto) ge 0)
+                {
+									$found = 1;
+                }
+        }
+
+	if( $found == 0 ) {
+		push @$protos, $proto;
+
+			my $body = "";
+			$body = "{\n\t";
+			$body = $body . "\tint types[". ($#types+2) ."];\n";
+			$body = $body. "\tvoid *ptrs[".($#types+2) ."];\n";
+
+			for( $i=0; $i<= $#types; $i++ ) {
+				$body = $body.   "\tptrs[$i]  = (void*)&(param$i);\n";
+				if( $types[$i] =~ /\*/ ) {
+					$body = $body. "\ttypes[$i] = SWAN_PTR;\n";
+				}
+				else {
+					$body = $body. "\ttypes[$i] = SWAN_".$types[$i].";\n";
+				}
+			}
+			$body = $body. "\tptrs[". ($#types+1) ."]  = NULL;\n";
+			$body = $body. "\ttypes[". ($#types+1) ."] = SWAN_END;\n";
+
+			if($async == 0 ) {
+			$body  = $body . "\t__swan_try_init();\n\tswanRunKernel ( \"" . $name . "\", grid, block, shmem, 1, ptrs, types);\n";
+			}
+			else {
+			$body  = $body . "\t__swan_try_init();\n\tswanRunKernelAsync ( \"" . $name . "\", grid, block, shmem, 1, ptrs, types);\n";
+			}
+	
+			$body = $body."\n\n}\n\n";
+			push @$stubs, $body;		
+#			printf ("%s\n", $body );	
+
+	}
+			
+		}
+	}
+
+}
+
+
+sub swan_header {
+	return "";
+
+#	my $header = <<EOF;
+#
+#extern void swanLoadProgramFromSource( const unsigned char *[], int );
+#extern void swanRunKernel( const char *,  dim3 , dim3 , long, ... );
+#static __thread int  __swan_initialised = 0;
+#static void __swan_try_init( void ) {
+#	if ( !__swan_initialised ) {
+#		swanLoadProgramFromSource( __swan_program_source, sizeof( __swan_program_source ) );
+#		__swan_initialised = 1;
+#	}
+#}
+#EOF
+#
+#	return $header;
+
+}
+
+sub make_embedded_kernel_source {
+	my $k = shift;
+	my @kernels = @$k;
+	my $src = "";
+	my $i=0;
+
+	for( $i=0; $i <= $#kernels; $i++ ) {
+		$src = $src. $kernels[$i]. "\n";
+	}
+	# Add the C '\' line-continuation character at end of line
+	$src =~ s/\"/\\"/g; # escape quotes
+	$src="\"".$src."\""; # add quotes to start and end
+	$src =~ s/\n/\",\n\"/g; # turn every link break into an end-of-string lf and start-of-string
+
+	$src = "static const unsigned char *__swan_program_source[] = {\n" . $src . ",\n\"\"\n};";
+
+	return $src;
+}
+
+sub to_cubin {
+my $sourcef = shift;
+my $arch = shift;
+
+my $preprocess = 1;
+my $maxreg = -1;
+# Step 0 - compile the code to cubin
+my $tempfile = mktemp( "__swanXXXXXX" );  
+my $tempfile2 = mktemp( "__swanXXXXXX" );  
+$tempfile2= $tempfile2. ".cu";
+
+
+# Compile the code to cubin
+`echo "#ifdef __CUDA_ARCH__"  > $tempfile2`; 
+`echo "#undef __CUDA_ARCH__"  >> $tempfile2`; 
+`echo "#endif"  >> $tempfile2`; 
+`echo "#define __CUDA_ARCH__" ${arch}0 >> $tempfile2`;
+`echo "#ifndef CUDA_2" >> $tempfile2`;
+`echo "#define BOUNDS(a,b,c,d) __launch_bounds__( (a)*(b)*(c), d )" >> $tempfile2`;
+`echo "#else " >> $tempfile2`;
+`echo "#define BOUNDS(a,b,c,d) " >> $tempfile2`;
+`echo "#endif " >> $tempfile2`;
+
+`echo "#define __global   " >> $tempfile2`;
+`echo "#define __private  " >> $tempfile2`;
+`echo "#define __local    " >> $tempfile2`;
+`echo "#define __constant " >> $tempfile2`;
+`echo "#ifndef M_PI " >>$tempfile2`;
+`echo "#define M_PI 3.14159265358979323846" >> $tempfile2`;
+`echo "#endif  " >>$tempfile2`;
+`echo  "typedef unsigned int uint; " >> $tempfile2`;
+
+`echo 'extern "C" {' >> $tempfile2`;
+`cat $sourcef >> $tempfile2`;
+`echo "}" >> $tempfile2`;
+
+$maxreg = getpragma( $tempfile2 );
+
+my $cmd = "nvcc    $nvcc_math_flags  --cubin $tempfile2 -o $tempfile  --ptxas-options=-v -arch=sm_$arch ";  #  -D__CUDA_ARCH__=${arch}0 ";
+
+if( $maxreg > 0 ) {
+	printf( "Compiling with a fixed # of registers : %d\n", $maxreg );
+	$cmd = $cmd . " --maxrregcount=$maxreg";
+}
+
+my $i;
+for( $i=0 ;$i <= $#switch; $i++ ) {
+	$cmd = $cmd ." ". $switch[$i] ;
+}
+print "$cmd\n";
+`$cmd`;
+print "\tCompilation Done.\n";
+
+if ( ! -e $tempfile ) {
+	printf ("Compilation failed -- look in $tempfile2\n" );
+	unlink( $tempfile );
+#	unlink( $tempfile2 );
+	return ( "", "" );
+}
+
+
+
+my $cubin = `swan-to-asc $tempfile`;
+
+
+$cubin =~ s/"/\\"/g;
+
+#print "Cubin $tempfile\n";
+#print "src $tempfile2\n";
+unlink( $tempfile );
+unlink( $tempfile2 );
+
+# Step 1 - Pass the input code through the preprocessor.
+
+my $source;
+if ( $preprocess == 1 ) {
+	$source = preprocess( $sourcef, \@switch );
+	$source =~ s/#.*//g;
+}
+else {
+	$source = `cat $sourcef`;
+}
+
+	return ($source, $cubin);
+}
+
+

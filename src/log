@@ -1,0 +1,119 @@
+gcc -m32 -g  -o ../bin/swan-to-asc to-asc.c
+g++ -m32 -g -o ../bin/swan-oclc oclc.cpp -I/usr/local/ati/include  -L/usr/local/ati/lib64  -lOpenCL -DOPENCL=yes   -lm
+PATH="/usr/lib64/qt-3.3/bin:/usr/kerberos/bin:/usr/lib64/ccache:/usr/local/bin:/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/sbin:/home/mjharvey/working/swan/bin:/usr/local/cuda/bin:/home/mjharvey/working/swan/bin:/usr/local/cuda/bin:/usr/local/cuda/lib":../bin; ../bin/swan --cuda fastfill_nv.kh fastfill.cu
+Building for CUDA
+Compiling for device architecture 13
+nvcc  -m32 --use_fast_math  --cubin __swanBrMye6.cu -o __swanm2RWLy  --ptxas-options=-v -arch=sm_13 
+ptxas info    : Compiling entry function 'canary' for 'sm_13'
+ptxas info    : Used 0 registers, 4+16 bytes smem
+ptxas info    : Compiling entry function 'swan_fast_fill' for 'sm_13'
+ptxas info    : Used 5 registers, 8+16 bytes smem
+	Compilation Done.
+FOUND 2 kernels
+	[swan_fast_fill]
+	[canary]
+FOUND 2 kernels
+	[swan_fast_fill]
+	[canary]
+Compiling for device architecture 20
+nvcc  -m32 --use_fast_math  --cubin __swanpTLZl2.cu -o __swanYGuYY_  --ptxas-options=-v -arch=sm_20 
+ptxas info    : Compiling entry function 'canary' for 'sm_20'
+ptxas info    : Used 0 registers, 36 bytes cmem[0]
+ptxas info    : Compiling entry function 'swan_fast_fill' for 'sm_20'
+ptxas info    : Used 8 registers, 40 bytes cmem[0]
+	Compilation Done.
+FOUND 4 kernels
+	[swan_fast_fill]
+	[canary]
+	[swan_fast_fill]
+	[canary]
+FOUND 4 kernels
+	[swan_fast_fill]
+	[canary]
+	[swan_fast_fill]
+	[canary]
+g++ -m32 -g --shared -fPIC -o ../lib/libswan_ocl.so  swanlib_ocl.cpp -I/usr/local/ati/include  -L/usr/local/ati/lib64  -lOpenCL -DOPENCL=yes   -lm -I../include -lpthread
+swanlib_ocl.cpp: In function ‘void swanInit()’:
+swanlib_ocl.cpp:167: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp:179: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp: In function ‘void swanRunKernel(const char*, int3, int3, size_t, int, void**, int*)’:
+swanlib_ocl.cpp:344: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp:377: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp:398: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp: In function ‘void swanBindToConstantEx(__swan_const_t*, const char*, size_t, void*)’:
+swanlib_ocl.cpp:633: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp:640: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp: In function ‘void swanSetDeviceNumber(int)’:
+swanlib_ocl.cpp:645: warning: deprecated conversion from string constant to ‘char*’
+g++ -m32 -g -o ../lib/libswan_ocl.a -c  swanlib_ocl.cpp -I/usr/local/ati/include  -L/usr/local/ati/lib64  -lOpenCL -DOPENCL=yes   -lm -I../include -lpthread
+swanlib_ocl.cpp: In function ‘void swanInit()’:
+swanlib_ocl.cpp:167: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp:179: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp: In function ‘void swanRunKernel(const char*, int3, int3, size_t, int, void**, int*)’:
+swanlib_ocl.cpp:344: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp:377: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp:398: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp: In function ‘void swanBindToConstantEx(__swan_const_t*, const char*, size_t, void*)’:
+swanlib_ocl.cpp:633: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp:640: warning: deprecated conversion from string constant to ‘char*’
+swanlib_ocl.cpp: In function ‘void swanSetDeviceNumber(int)’:
+swanlib_ocl.cpp:645: warning: deprecated conversion from string constant to ‘char*’
+g++ -m32 -g --shared -fPIC -o ../lib/libswan_cuda.so  swanlib_nv.cpp -I/usr/local/cuda/include -L/usr/local/cuda/lib -L/usr/local/cuda/lib64  -lcuda -lcudart -lm -I../include -lpthread
+swanlib_nv.cpp: In function ‘void swanSetDeviceNumber(int)’:
+swanlib_nv.cpp:77: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanLoadProgramFromSource(const char*, const unsigned char*, size_t, int)’:
+swanlib_nv.cpp:94: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:108: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanRunKernelAsync(const char*, block_config_t, block_config_t, size_t, int, void**, int*)’:
+swanlib_nv.cpp:159: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:164: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:207: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void try_init()’:
+swanlib_nv.cpp:299: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:303: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:342: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:356: error: ‘cuCreateStream’ was not declared in this scope
+swanlib_nv.cpp: In function ‘void swanMemset(void*, unsigned char, size_t)’:
+swanlib_nv.cpp:407: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void* swanMalloc(size_t)’:
+swanlib_nv.cpp:425: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void* swanMallocHost(size_t)’:
+swanlib_nv.cpp:440: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanFree(void*)’:
+swanlib_nv.cpp:453: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanFreeHost(void*)’:
+swanlib_nv.cpp:461: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanSynchronize()’:
+swanlib_nv.cpp:469: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanMemcpyHtoD(void*, void*, size_t)’:
+swanlib_nv.cpp:476: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanMemcpyDtoH(void*, void*, size_t)’:
+swanlib_nv.cpp:483: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanMemcpyDtoD(void*, void*, size_t)’:
+swanlib_nv.cpp:491: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:495: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void* swanMallocPitch(size_t*, unsigned int, unsigned int)’:
+swanlib_nv.cpp:516: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘CUmod_st* swanGetModule(const char*)’:
+swanlib_nv.cpp:533: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanBindToTexture1DEx(const char*, const char*, int, void*, size_t, int)’:
+swanlib_nv.cpp:546: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:553: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:580: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:584: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanMakeTexture1DEx(const char*, const char*, int, void*, size_t, int)’:
+swanlib_nv.cpp:601: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:622: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:628: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:643: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:646: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:655: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:661: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:665: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanMakeTexture2DEx(const char*, const char*, int, int, void*, size_t, int)’:
+swanlib_nv.cpp:671: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp: In function ‘void swanBindToConstantEx(const char*, const char*, size_t, void*)’:
+swanlib_nv.cpp:680: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:683: warning: deprecated conversion from string constant to ‘char*’
+swanlib_nv.cpp:686: warning: deprecated conversion from string constant to ‘char*’
+make: *** [lib] Error 1

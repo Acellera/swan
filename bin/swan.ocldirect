@@ -1,0 +1,659 @@
+#!/usr/bin/perl -w
+#
+# Swan (c) 2010 M J Harvey  m.j.harvey@ic.ac.uk
+# License: GPL v 2
+
+my $preprocess = 1;
+
+use strict;
+use File::Temp qw/ :mktemp  /;
+use Text::Balanced qw/ extract_codeblock /;
+use Text::Balanced qw/ extract_bracketed /;
+
+# Process the command line arguments
+#
+my $outputf="";
+my $sourcef="";
+my @switch;
+
+my $gpu_build;
+
+$gpu_build  = 1;
+
+( $gpu_build, $sourcef, $outputf, @switch ) = parse_args( \@ARGV );
+
+if ( $sourcef =~ /^$/  ||  $outputf =~ /^$/ ) {
+	error( "Syntax : swan sourcefiles [switches]" );
+}
+
+# load in the source, after preprocessing it
+
+#print "Preprocessed $sourcef\n";
+my	$source = preprocess( $sourcef, \@switch );
+
+
+# transform from cuda to opencl
+
+my @local_sizes;
+my @local_names;
+my $source_ocl = $source; #transform_to_ocl( $source, \@local_names, \@local_sizes );
+
+# Now write it to a file and run it though the ocl compiler to turn it into ptx
+#
+
+my $tempfile = mktemp( "_swanXXXXXX" );
+my $tempfile2 = mktemp( "_swanXXXXXX" );
+
+$tempfile=$tempfile. ".out";
+$tempfile2=$tempfile2. ".in";
+
+# Write the ocl-ified source to "tempfile2;
+{
+
+  my $FILE;
+	open FILE, ">", $tempfile2 or die "Cannot open output file";
+	print FILE $source_ocl;
+	close(FILE);
+}
+
+
+my $cmd = "swan-oclc";
+
+$gpu_build = 1;
+
+#if ( $gpu_build == 1 ) { 
+#	$cmd = $cmd ." --gpu ";
+##	printf(" Target is GPU\n");
+#}
+#else  {
+#	$cmd = $cmd ." --cpu ";
+##	printf(" Target is CPU\n");
+#}
+
+$cmd = $cmd. " $tempfile $tempfile2";
+my $out=`$cmd`;
+print $out;
+
+if ( ! -e $tempfile ) {
+	printf ("Compilation failed : look in $tempfile2\n" );
+ unlink( $tempfile );
+#unlink( $tempfile2 );
+	exit(-99);
+}
+
+my $cubin = `cat $tempfile`;
+
+#my $cubin = '""';
+
+#unlink( $tempfile );
+#printf("Intermediate left in $tempfile2\n");
+#	unlink( $tempfile2 );
+
+
+
+my @kernels;
+extract_kernels( $source, \@kernels );
+
+#my $source_no_kernels;
+#$source_no_kernels = extract_kernels( $source, \@kernels );
+
+
+my @stub_protos;
+my @stubs;
+
+my @textures;
+
+make_stubs( \@kernels, \@stub_protos, \@stubs, $#local_names );
+
+
+# Finished
+	my $i;
+  my $FILE;
+	open FILE, ">", $outputf or die "Cannot open output file";
+	print FILE "#define __PTX_INCLUDED\n"; 
+	printf FILE  "static const char * __SWAN_MODULE_NAME__ =  \".$sourcef.\";\n";
+	printf FILE "static const char * __swan_textures[] = {\n";
+	for( $i = 0 ; $i <= $#textures; $i++ ) {
+	my $tname = $textures[$i];
+		$tname =~ s/^.*\*//;
+		$tname =~ s/,.*$//;
+		printf FILE "\t\"%s\",\n", $tname ;
+	}	
+	printf FILE "\t0 };\n\n";
+	my $len = $#textures + 1;
+	if( $len < 0 ) {$len=1;}
+	printf FILE "static int   __swan_texture_lens[ $len ];\n\n";
+	printf FILE "static void *__swan_texture_ptrs[ $len ];\n\n";
+	printf FILE "static void *__swan_texture_images[ $len ];\n\n";
+
+	print FILE "#include <stdio.h>\n";
+print FILE "struct __swan_const_t {
+  char *name;
+  size_t size;
+  void *ptr;
+};
+";
+
+#if( $gpu_build ) {
+#	printf FILE "static int __swan_build_target = SWAN_TARGET_GPU;\n";
+#}
+#else {
+#	printf FILE "static int __swan_build_target = SWAN_TARGET_CPU;\n";
+#}
+	printf FILE "static struct __swan_const_t __swan_const[] = {\n";
+	for( $i=0; $i <= $#local_names; $i++ ) {
+		printf( FILE "\t{ \"%s\", %s, NULL },\n", $local_names[$i], $local_sizes[$i] );
+	}
+	printf(  FILE "\t{ NULL, 0, NULL }\n}\;\n\n" );
+
+	print FILE "static const unsigned char  __swan_program_source[] = ";
+	print FILE  $cubin.";\n";
+	print FILE "#ifndef OPENCL\n";
+	print FILE "#define OPENCL\n";
+	print FILE "#endif\n";
+	print FILE "#include \"swan_stub.h\"\n";
+	for( $i = 0 ; $i <= $#stubs; $i++ ) {
+		print FILE "$stub_protos[$i]\n";
+		print FILE "$stubs[$i]\n\n";
+		my $pp = $stub_protos[$i];
+		$pp =~ s/\ \(/_async\ \(/g; 
+		print FILE "$pp\n";
+		$pp = $stubs[$i];
+		$pp =~ s/RunKernel/RunKernelAsync/g;
+		print FILE "$pp\n\n";
+	}
+	close FILE;
+
+
+unlink ($tempfile);
+unlink ($tempfile2);
+
+exit(0);
+
+
+
+sub error {
+	printf("ERROR %s\n", shift );
+	exit(99);
+}
+
+sub parse_args {
+	my @switch;
+	$i = shift;
+	my @args = @$i;
+	my $gpu_build = 1;
+	my $output = $args[0];
+	my $source = $args[1];
+
+	for( $i=2; $i <= $#args; $i++ ) {
+			if( !( $args[$i] =~ /^--cpu$/) && !($args[$i] =~ /^--gpu$/) ) {
+				push @switch, $args[$i];
+#printf("ARGS $args[$i]\n" );
+			}
+			if( $args[$i] =~ /^--cpu$/ ) { $gpu_build = 0; }
+	}
+	return ( $gpu_build,  $source, $output, @switch );
+}
+
+sub preprocess {
+	my $source = shift;
+	my $k = shift;
+	my @switch = @$k;
+	my $i;
+#	my $cmd = "g++ -g --profile -x c -E -I.. -I..\\.. ";
+#	my $cmd ="cl -E  -I.. -I..\\.. -I\"c:\\program files\\ati stream\\include\" ";
+	my $cmd = "cpp ";
+#	my $cmd = "gcc  -x c -E ";
+	my $tempfile = mktemp( "__swanXXXXXX" );  
+	$cmd = $cmd . " ". $source;
+	for( $i=  0; $i <$#switch;  $i++ ) { 
+		$cmd = $cmd . " ". $switch[$i]; 
+	}
+	$cmd = $cmd . " > $tempfile";
+#print "$cmd\n";
+	`$cmd`;
+	if( ! -e $tempfile ) {
+		error( "Preprocessing failed" );
+	}
+	# Load in the file
+	 $source = `cat $tempfile`;
+
+	unlink( $tempfile );
+	return $source;
+}
+
+
+sub extract_kernels {
+	my $extracted="" ;
+	my $remainder="";
+	my $source = shift;
+	my $proto  = shift;
+	my $source_no_prot = "";
+	# Step 2 - grep out each of the kernels/kernel prototypes
+
+	my $reg = '((__kernel))\s+\w+\s+\w+\s*\((\s*[\w\*]+\s+[\w\*]+\s*,*)*\)\s*{';
+	$_ = $source;
+	while( $_ =~ /$reg/ ) {
+		my $dec = $&;
+#printf ("%s\n", $dec );
+		$source_no_prot = $source_no_prot . $` ;
+		
+    ($extracted, $remainder) = extract_bracketed("{".$',"{}");
+		push @$proto, $dec . $extracted;
+		$_ = $remainder;
+#printf(".\n" );
+	}
+
+	$source_no_prot = $source_no_prot . $remainder;
+
+	if ( $source_no_prot =~ /^$/ ) { 
+		# No prototypes inthis source
+		$source_no_prot = $source; 
+	}
+	return $source_no_prot;
+}
+
+sub make_stubs {
+	my $a = shift;
+	my @kernel = @$a;
+	my $protos = shift;
+	my $stubs  = shift;
+	my $nlocal = shift;
+	my $i;
+	my $ik;
+
+printf ("FOUND %d kernels\n", $#kernel  + 1 );
+
+	for( $ik=0; $ik<=$#kernel; $ik++ ) {
+		my $p = $kernel[$ik];
+		$p =~ /[^\(]+\(/;
+		my $prefix = $&;
+
+		$p = $';
+		$p =~ /[^\(]+\)/;
+		my $args = $&;
+		$args =~ s/\s*\)\s*$//g;
+		$prefix =~ s/\s*\(\s*$//g;
+		chomp $args;
+		chomp $prefix;
+		# Perhaps the arg is "float *foo" -- the * associates with the type, not the varname:
+		$args =~ s/\s*\*/\*\ /g;
+		$args =~ s/,/\ ,\ /g;
+		$args =~ s/\s+const\s+//g;
+		my @aa = split( /,/, $args );
+		my @types;
+		for (my $j=0; $j <= $#aa; $j++ ) {
+			chomp( $aa[$j] );
+			$aa[$j] =~ s/^\s+//g;
+			$aa[$j] =~ s/\s+$//g;
+			my @bb = split( /\s+/, $aa[$j] );
+			my $type = "";
+
+			for( my $i=0; $i < $#bb; $i++ ) { $type = $type . " ". $bb[$i]; }
+
+#			printf("%s : %s\n", $type, $bb[$#bb] );
+
+#			if( $bb[0] =~ /\s*struct\s*/ ) {
+#				$bb[0] = $bb[0] . " " . $bb[1];
+#			}
+
+			$type =~ s/__global//g;
+			$type =~ s/__local//g;
+			$type =~ s/__constant//g;
+
+			push @types, $type;
+			
+		}
+
+		# Now let's process the prefix. We need to get the function name and ensure that it's not just a __device__ function
+		my $is_global=1;
+		my $name;
+		$name = $prefix;
+		$name =~ s/\s*$//g;
+		$name =~ s/^.*\s+//g;
+
+		if( $is_global ) {
+	#		print $prefix;
+	#		print "\n";		
+	#		print @types;
+	#		print "\n";		
+			my $proto = "static void k_".$name." ( block_config_t grid, block_config_t block, size_t shmem, ";
+			for( $i=0; $i<= $#types; $i++ ) {
+				$types[$i] =~ s/\*.*/\*/g;
+			}
+			for( $i=0; $i< $#types; $i++ ) {
+				$proto = $proto . $types[$i]." param".$i.", ";
+			}
+			if( $#types >= 0 ) {
+				$proto = $proto . $types[ $#types ] . " param".$i;
+			}
+			$proto = $proto. " )";
+			printf ("%s\n", $proto );	
+
+	push @$protos, $proto;
+
+#			my $body = "{\n\t__swan_try_init();\n\tswanRunKernel ( \"" . $name . "\", grid, block, shmem, 0, \n";
+#			for( $i=0; $i<= $#types; $i++ ) {
+# Fix types
+#				$types[$i] =~ s/^\s+//g;
+#				$types[$i] =~ s/unsigned\s*/u/g;
+#
+#				my $is_ptr = "SWAN_$types[$i]";
+#				if( $types[ $i ] =~ '\*' ) { $is_ptr = "SWAN_PTR"; }
+#				$body = $body ."\t$is_ptr, param".$i.",\n";
+#			}
+#			for( $i=0; $i<=$nlocal; $i++ ) {
+#				$body = $body . "\tSWAN_PTR, __swan_const[$i].ptr,\n";
+#			}
+#			for( $i=0; $i<= $#textures; $i++ ) {
+#				my $is_ptr = "SWAN_PTR";
+#				$body = $body ."\t$is_ptr , __swan_texture_ptrs[$i],\n";
+#				$body = $body ."\tSWAN_int, __swan_texture_lens[$i],\n";
+#			}
+#
+#			$body = $body. "\tSWAN_END );\n}\n";
+
+my $len = 1;
+if( $#types >=0 )    { $len += $#types + 1 ; }
+if( $#textures >=0 ) { $len += ($#textures+1)*2 ; }
+if( $nlocal >0 ) { $len += $nlocal + 1; }
+
+      my $body = "";
+      $body = $body . "{\n\t";
+      $body = $body . "\tint types[$len];\n";
+      $body = $body. "\tvoid *ptrs[$len];\n";
+ 
+my $idx=0; 
+      for( $idx=0; $idx<= $#types; $idx++ ) {
+        $body = $body.   "\tptrs[$idx]  = (void*)&(param$idx);\n";
+				if( $types[ $idx ] =~ '\*' ) { 
+          $body = $body. "\ttypes[$idx] = SWAN_PTR;\n";
+        }
+        else {
+          $body = $body. "\ttypes[$idx] = SWAN_".$types[$idx].";\n";
+        }
+      }
+			for( $i=0; $i<=$nlocal; $i++ ) {
+				$body = $body . "\tptrs[$idx]  = (void*)&(__swan_const[" . ($i) ."].ptr);\n";
+				$body = $body . "\ttypes[$idx] = SWAN_PTR;\n"; # a, __swan_const[".($i+$idx)."].ptr;\n";
+				$idx++;
+			}
+
+			for( $i=0; $i<= $#textures; $i++ ) {
+
+				$body = $body . "\tptrs[$idx]  = (void*)&(__swan_texture_ptrs[" . ($i) ."]);\n";
+				$body = $body . "\ttypes[$idx] = SWAN_PTR;\n"; 
+				$idx++;
+
+				$body = $body . "\tptrs[$idx]  = (void*)&(__swan_texture_lens[" . ($i) ."]);\n";
+				$body = $body . "\ttypes[$idx] = SWAN_int;\n"; 
+				$idx++;
+			}
+
+	$len--;
+      $body = $body. "\tptrs[". ($len) ."]  = NULL;\n";
+      $body = $body. "\ttypes[". ($len) ."] = SWAN_END;\n";
+
+      $body  = $body . "\t__swan_try_init();\n\tswanRunKernel ( \"" . $name . "\", grid, block, shmem, 0, ptrs, types);\n";
+      $body = $body."\n\n}\n\n";
+
+
+
+
+
+		push @$stubs, $body;		
+			
+		}
+	}
+
+}
+
+
+
+sub check_prototype {
+
+	my $s = shift;
+	if( !($s =~ /_global__/) ) { return 0; }
+	my $err=0;
+	if ( $s =~ /float1/ ) { print "float1 not permitted\n"; $err=1; }
+	if ( $s =~ /float3/ ) { print "float3 not permitted\n"; $err=1; }
+	if ( $s =~ /int3/ ) { print "int3 not permitted\n"; $err=1; }
+	if ( $s =~ /int1/ ) { print "int1 not permitted\n"; $err=1; }
+	if ( $s =~ /uint3/ ) { print "uint3 not permitted\n"; $err=1; }
+	if ( $s =~ /uint1/ ) { print "uint1 not permitted\n"; $err=1; }
+
+	if( $err ) {
+		print "ERROR IN : ".$s."\n";
+		exit( 255 );
+#exit(0);
+	}
+}
+
+sub fixup_prototype {
+	my $s = shift;
+	my $local_args = shift;
+
+	my $k = shift;
+	my @textures = @$k; #shift;
+
+	$s =~ s/\n//g;
+	my $global=0;
+	if ( $s =~ /__global__/ ) { $global=1; }
+
+	$s =~ s/__global__/__kernel/g;
+	$s =~ s/__device__//g;
+
+
+	my $t = $s;
+	my $prefix;
+	my $suffix;
+
+
+	$t =~ /^.*\(/;
+	$prefix=$&;
+	$t =~ s/^.*\(//g;
+
+	$t =~ /\).*$/;
+	$suffix=$&;
+	$t =~ s/\).*$//g;
+
+	my $a = "";
+	my @args = split( /,/, $t );
+
+	
+	for( my $i=0; $i <= $#args;$i++ ) {
+		if ( $args[$i] =~ /\*/ ) {
+			if( ! ( $args[$i] =~/__global/ || $args[$i] =~ /__local/ || $args[$i] =~ /__private/ || $args[$i] =~ /__constant/ ) ) {
+#				printf("WARNING: Assuming pointer is __global : %s\n", $args[$i] );
+				$args[$i] = "__global " . $args[$i];
+			}
+		}
+		if( length($a) > 0 ) { $a = $a .", "; }
+		$a = $a. $args[$i];
+	}
+
+
+	if ($global==1){ 
+		$a = $a. " ". $local_args;
+		my $i;
+
+		for( $i=0; $i<=$#textures; $i++ ) {
+			$a = $a . ", $textures[$i]";
+		}
+
+		$a = $a. ", __local int* __swan_shmem";	
+	}
+	$s = $prefix .$a . $suffix;
+
+
+	return $s;
+}
+
+sub preamble {
+
+# #pragma OPENCL EXTENSION cl_khr_fp64 : enable
+# typedef struct float3 { float x,y,z;} float3;
+#inline int atomicAdd( __global int *i, int v ) { *i+=v; return *i; }
+	return <<EOF
+#pragma OPENCL EXTENSION cl_khr_global_int32_base_atomics : enable
+#pragma OPENCL EXTENSION cl_khr_local_int32_base_atomics : enable
+#pragma OPENCL EXTENSION cl_khr_fp64 : enable
+#pragma OPENCL EXTENSION cl_khr_byte_addressable_store : enable
+
+#define fmodf(a,b) fmod(a,b)
+#define sinf(a) sin(a)
+#define cosf(a) cos(a)
+#define __sin(a) sin(a)
+#define __cos(a) cos(a)
+#define __sinf(a) sin(a)
+#define __cosf(a) cos(a)
+#define sqrtf(a) sqrt(a)
+#define logf(a) log(a)
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#define __umul24(a,b) ((a)*(b))
+#define __mul24(a,b) ((a)*(b))
+#define __fdividef(a,b) ((a)/(b))
+
+#if 0
+typedef struct float3_t  {
+	float x,y,z;
+} float3;
+#endif
+float3 make_float3( float a, float b, float c ) { float3 r; r.x=a; r.y=b; r.z=c; return r; }
+
+uint2 make_uint2( uint a, uint b  ) { uint2 r; r.x=a; r.y=b; return r; }
+
+float2 make_float2( float a, float b  ) { float2 r; r.x=a; r.y=b; return r; }
+float4 make_float4( float a, float b, float c, float d ) { float4 r; r.x=a; r.y=b; r.z=c; r.w=d; return r; }
+
+#define NULL (0)
+
+float tex1D_1(  __global float *ptr, int N, float idx ) {
+	float ii = ( idx * N - 0.5f );
+	int i   = floor( ii );	
+	int j   = i +1;
+	float a = ii - i;
+	if(i<0) { i=0; }
+	if(j<0) { j=0; }
+	if(i>=N ){ i=N-1; }
+	if(j>=N ){ j=N-1; }
+	float T = ptr[i];
+	float T1= ptr[j];
+	return  ( (1.f-a) * T + a * T1 );
+}
+
+
+
+float2 tex1D_2(  __global float2 *ptr, int N, float idx ) {
+	float ii = idx * N - 0.5f;
+	int i   = floor( ii );	
+	int j   = i + 1;
+	float a = ii - i;
+	if(i<0) { i=0;}
+	if(j<0) { j=0;}
+	if( i>=N ){ i=N-1; }
+	if( j>=N ){ j=N-1; }
+	float2 T = ptr[i];
+	float2 T1= ptr[j];
+	return make_float2(
+		(1.f-a) * T.x + a * T1.x,
+		(1.f-a) * T.y + a * T1.y
+	); 
+}
+
+
+
+float4 tex1D_4( __global float4 *ptr, int N, float idx ) {
+	float ii = idx * N - 0.5f;
+	int i   = floor( ii );	
+	int j   = i + 1;
+	float a = ii - i;
+	if(i<0) { i=0; }
+	if(j<0) { j=0; }
+	float4 T = ptr[i];
+	if( i>=N ){ i=N-1; }
+	if( j>=N ){ j=N-1; }
+	float4 T1= ptr[j];
+	return make_float4(
+		(1.f-a) * T.x + a * T1.x,
+		(1.f-a) * T.y + a * T1.y,
+		(1.f-a) * T.z + a * T1.z,
+		(1.f-a) * T.w + a * T1.w
+	); 
+}
+
+#define  tex1Dfetch( ptr, idx ) ((ptr)[idx])
+
+
+#define __align__( x ) __attribute__ ((aligned ( (x) )))
+
+EOF
+
+
+#warn "ATOMIC OPERATIONS ARE BEING SUPPRESSED -- RESULTS WILL BE WRONG!!!"
+}
+
+
+sub extract_localvars {
+	my $src = shift;
+	my $local_names = shift;
+	my $local_sizes = shift;
+	$_ = $src;
+
+	my $args = "";
+#printf("EXTRACT LOCAL\n");
+	# grab all of the local variable definitions;
+	while( $src =~ /__device__[^{};]*[^\)\s]\s*;/ ) {
+		my $prm = $&;
+		$src = $`.$';
+#		printf( "LOCAL VARIABLE [%s]\n", $prm );
+
+		$prm =~ s/;//g;
+
+		
+#		my $array_args="";
+		my $device = 0; 
+		my $const  = 0;
+		if( $prm =~ /__device__/ ) {$device=1; }
+		if( $prm =~ /__constant__/ ) {$const=1; }
+		my $len = 1;
+
+		if( $prm =~  /\[[^\]]*\]/ ) {
+			$len =$&;
+			$len =~ s/[\[\]]//g;
+			$prm =~ s/\[[^\]]*\]//g;
+#			printf ("ARRAY [%s]\n", $array_args );
+		}
+
+		$prm =~ s/__device__//g;
+		$prm =~ s/__constant__//g;
+		my @s = split( /\s+/, $prm );
+		my $type="";
+		my $name="";
+		my $i;
+		for( $i=0; $i<$#s; $i++ ) {
+			$type = $type . " " . $s[$i];
+		}
+		$name=$s[$#s];
+
+		if( $const ) {
+			$args = $args . ", __constant ";
+		}
+		else {
+			$args = $args . ", __global ";
+		}
+		$args = $args . " " . $type ." *". $name;
+#printf ("ARG TYPE [%s] NAME [%s] LEN [sizeof(%s) * (%s)]\n", $type, $name, $type, $len );
+
+		# For each of these, we make a stub
+		push @$local_names, $name;
+		push @$local_sizes, "(sizeof(" . $type . ") * (". $len ."))";		
+	}
+
+#	printf("Special kernel args [$args] [ %d]\n", $#local_names );
+	return $src, $args;
+}
